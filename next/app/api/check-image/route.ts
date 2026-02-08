@@ -4,7 +4,7 @@ import { computeHash, hammingDistance } from "@/lib/phash";
 // Store the last hash in memory (sufficient for hackathon)
 let lastHash: string | null = null;
 
-const SIMILARITY_THRESHOLD = 26; // < 5 = too similar, >= 5 = keep
+const SIMILARITY_THRESHOLD = 20; // < 5 = too similar, >= 5 = keep
 
 export async function POST(request: NextRequest) {
   try {
