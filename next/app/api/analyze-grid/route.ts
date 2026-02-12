@@ -1,49 +1,47 @@
 import { NextRequest, NextResponse } from "next/server";
-import { analyzeFrames, AnalysisResult } from "../check-image/imageAnalysis";
+import { analyzeGrid } from "../check-image/imageAnalysis";
+import { getDb } from "@/lib/mongodb";
 
-// Running total of score across batches (persists in server memory)
-let cumulativeScore = 0;
-let batchHistory: Array<{ batchNumber: number; result: AnalysisResult; cumulativeScore: number }> = [];
+function getTodayDate(): string {
+  return new Date().toISOString().split("T")[0]; // YYYY-MM-DD
+}
 
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { images, timestamps } = body as {
-      images: string[]; // base64 data URLs
-      timestamps: string[];
+    const { gridImage, startTime, endTime } = (await request.json()) as {
+      gridImage: string;
+      startTime: string;
+      endTime: string;
     };
 
-    if (!images || images.length === 0) {
-      return NextResponse.json(
-        { error: "No images provided" },
-        { status: 400 }
-      );
+    if (!gridImage) {
+      return NextResponse.json({ error: "No grid image provided" }, { status: 400 });
     }
 
-    if (!timestamps || timestamps.length !== images.length) {
-      return NextResponse.json(
-        { error: "Timestamps must match number of images" },
-        { status: 400 }
-      );
-    }
+    const result = await analyzeGrid(gridImage, startTime, endTime);
+    const db = await getDb();
+    const collection = db.collection("carbonLogs");
 
-    const result = await analyzeFrames(images, timestamps);
+    const today = getTodayDate();
 
-    // Update running total
-    cumulativeScore += result.scoreChange;
-    const batchNumber = batchHistory.length + 1;
+    // Get cumulative score for today
+    const todayLogs = await collection.find({ date: today }).toArray();
+    const previousTotal = todayLogs.reduce((sum, log) => sum + (log.scoreChange || 0), 0);
+    const cumulativeScore = Math.round((previousTotal + result.scoreChange) * 100) / 100;
 
-    batchHistory.push({
-      batchNumber,
-      result,
-      cumulativeScore: Math.round(cumulativeScore * 100) / 100,
+    // Store to MongoDB
+    await collection.insertOne({
+      summary: result.summary,
+      activities: result.activities,
+      totalCO2Kg: result.totalCO2Kg,
+      scoreChange: result.scoreChange,
+      startTime: result.startTime,
+      endTime: result.endTime,
+      date: today,
+      createdAt: new Date(),
     });
 
-    return NextResponse.json({
-      ...result,
-      batchNumber,
-      cumulativeScore: Math.round(cumulativeScore * 100) / 100,
-    });
+    return NextResponse.json({ success: true, cumulativeScore });
   } catch (err) {
     console.error("Analysis error:", err);
     return NextResponse.json(
@@ -53,18 +51,32 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// GET: retrieve cumulative score and batch history
 export async function GET() {
-  return NextResponse.json({
-    cumulativeScore: Math.round(cumulativeScore * 100) / 100,
-    totalBatches: batchHistory.length,
-    history: batchHistory,
-  });
+  try {
+    const db = await getDb();
+    const collection = db.collection("carbonLogs");
+    const today = getTodayDate();
+
+    const todayLogs = await collection.find({ date: today }).toArray();
+    const cumulativeScore = todayLogs.reduce((sum, log) => sum + (log.scoreChange || 0), 0);
+
+    return NextResponse.json({
+      cumulativeScore: Math.round(cumulativeScore * 100) / 100,
+      totalBatches: todayLogs.length,
+    });
+  } catch (err) {
+    return NextResponse.json({ error: String(err) }, { status: 500 });
+  }
 }
 
-// DELETE: reset running total
 export async function DELETE() {
-  cumulativeScore = 0;
-  batchHistory = [];
-  return NextResponse.json({ message: "Score reset" });
+  try {
+    const db = await getDb();
+    const collection = db.collection("carbonLogs");
+    const today = getTodayDate();
+    await collection.deleteMany({ date: today });
+    return NextResponse.json({ message: "Today's logs cleared" });
+  } catch (err) {
+    return NextResponse.json({ error: String(err) }, { status: 500 });
+  }
 }
